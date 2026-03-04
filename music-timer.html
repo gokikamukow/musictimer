@@ -401,6 +401,10 @@
       btnStart.disabled = false;
       refreshDurationDisplay();
     })();
+
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('sw.js', { scope: './' }).catch(() => {});
+    }
   </script>
 </body>
 </html>

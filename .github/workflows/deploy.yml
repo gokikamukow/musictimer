@@ -24,11 +24,16 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+      - name: Setup ImageMagick
+        uses: mfinelli/setup-imagemagick@v7
       - name: Prepare deployment
         run: |
-          mkdir -p deploy
+          mkdir -p deploy/icons
           cp music-timer.html deploy/index.html
           cp manifest.json deploy/
+          cp sw.js deploy/
+          magick -size 192x192 xc:'#1a1a2e' deploy/icons/icon-192.png
+          magick -size 512x512 xc:'#1a1a2e' deploy/icons/icon-512.png
       - name: Setup Pages
         uses: actions/configure-pages@v3
       - name: Upload artifact
