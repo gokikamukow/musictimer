@@ -268,6 +268,12 @@
       displayAnimationId = requestAnimationFrame(updateDisplay);
     }
 
+    async function requestMicrophone() {
+      if (stream) return;
+      setStatus('Requesting microphone…');
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    }
+
     async function initClassifier() {
       setStatus('Loading MediaPipe…');
       const mod = await import(
@@ -286,9 +292,8 @@
       classifier.setDefaultSampleRate(SAMPLE_RATE);
     }
 
-    async function initMicrophone() {
-      setStatus('Requesting microphone…');
-      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    function connectMicrophoneToClassifier() {
+      if (!stream || audioContext) return;
       audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
       const src = audioContext.createMediaStreamSource(stream);
       // ScriptProcessorNode is deprecated but works without a server; buffer 4096
@@ -347,8 +352,9 @@
       try {
         btnStart.classList.add('loading');
         if (!classifier) {
+          await requestMicrophone();
           await initClassifier();
-          await initMicrophone();
+          connectMicrophoneToClassifier();
         }
         remainingSeconds = getSelectedDurationSeconds();
         lastClassification = null;
