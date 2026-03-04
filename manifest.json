@@ -1,0 +1,9 @@
+{
+  "name": "Music Timer",
+  "short_name": "MusicTimer",
+  "description": "Countdown timer that only runs while music is detected (e.g. piano practice)",
+  "start_url": "/musictimer/",
+  "display": "standalone",
+  "theme_color": "#1a1a2e",
+  "background_color": "#1a1a2e"
+}

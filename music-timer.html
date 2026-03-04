@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1a1a2e">
+  <link rel="manifest" href="manifest.json">
+  <title>Music Timer</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+      color: #e8e8e8;
+      padding: 1.5rem;
+    }
+    h1 {
+      font-size: 1.5rem;
+      font-weight: 600;
+      margin-bottom: 2rem;
+      letter-spacing: 0.02em;
+    }
+    .timer-box {
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 16px;
+      padding: 2rem 3rem;
+      margin-bottom: 1.5rem;
+      min-width: 200px;
+      text-align: center;
+    }
+    .timer-value {
+      font-variant-numeric: tabular-nums;
+      font-size: 3rem;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+    }
+    .timer-label {
+      font-size: 0.85rem;
+      opacity: 0.8;
+      margin-top: 0.25rem;
+    }
+    .status {
+      font-size: 0.9rem;
+      margin-bottom: 1rem;
+      min-height: 1.4em;
+    }
+    .status.detecting { color: #7dd3fc; }
+    .status.music { color: #86efac; }
+    .status.other { color: #fcd34d; }
+    .status.error { color: #fca5a5; }
+    button {
+      font-size: 1rem;
+      padding: 0.75rem 1.75rem;
+      border: none;
+      border-radius: 10px;
+      cursor: pointer;
+      font-weight: 600;
+      transition: transform 0.1s, box-shadow 0.1s;
+    }
+    button:hover { transform: translateY(-1px); }
+    button:active { transform: translateY(0); }
+    #btnStart {
+      background: #22c55e;
+      color: #fff;
+    }
+    #btnStart:hover { box-shadow: 0 4px 14px rgba(34, 197, 94, 0.4); }
+    #btnStart:disabled {
+      background: #4b5563;
+      cursor: not-allowed;
+      transform: none;
+    }
+    .loading {
+      opacity: 0.7;
+      pointer-events: none;
+    }
+    .timer-select-wrap {
+      margin-bottom: 1rem;
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+    }
+    .timer-select-wrap label {
+      font-size: 0.9rem;
+      opacity: 0.9;
+    }
+    .timer-select-wrap input[type="number"] {
+      font-size: 1rem;
+      width: 4rem;
+      padding: 0.5rem 0.5rem;
+      border-radius: 8px;
+      border: 1px solid rgba(255,255,255,0.2);
+      background: rgba(255,255,255,0.08);
+      color: #e8e8e8;
+      text-align: right;
+      -moz-appearance: textfield;
+      appearance: textfield;
+    }
+    .timer-select-wrap input[type="number"]::-webkit-outer-spin-button,
+    .timer-select-wrap input[type="number"]::-webkit-inner-spin-button {
+      -webkit-appearance: none;
+      margin: 0;
+    }
+    .timer-select-wrap input[type="number"]:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+  </style>
+</head>
+<body>
+  <h1>Music Timer</h1>
+  <div class="timer-box">
+    <div class="timer-value" id="timerDisplay">15m</div>
+    <div class="timer-label">Time remaining (counts down while playing)</div>
+  </div>
+  <div class="timer-select-wrap">
+    <label for="timerMinutes">Duration:</label>
+    <input type="number" id="timerMinutes" min="0" max="999" value="15" placeholder="0" aria-label="Minutes">
+    <span>min</span>
+    <input type="number" id="timerSeconds" min="0" value="0" placeholder="0" aria-label="Seconds">
+    <span>sec</span>
+  </div>
+  <div class="status" id="status">Initializing…</div>
+  <button type="button" id="btnStart" disabled>Start</button>
+
+  <script type="module">
+    const timerDisplay = document.getElementById('timerDisplay');
+    const statusEl = document.getElementById('status');
+    const btnStart = document.getElementById('btnStart');
+    const timerMinutesInput = document.getElementById('timerMinutes');
+    const timerSecondsInput = document.getElementById('timerSeconds');
+
+    let classifier = null;
+    let audioContext = null;
+    let stream = null;
+    let processor = null;
+    let source = null;
+    let audioBuffer = [];
+    const SAMPLE_RATE = 48000;
+    const CHUNK_SAMPLES = 48000; // 1 second
+    const GRACE_PERIOD_MS = 5000;
+    let isRunning = false;
+    let remainingSeconds = 900;
+    let lastClassification = null;
+    let lastClassificationTime = 0;
+    let lastTickTime = 0;
+    let displayAnimationId = null;
+    let alarmInterval = null;
+    let gracePeriodEndTime = null;
+    let remainingWhenMusicStopped = 0;
+
+    function setStatus(text, className = '') {
+      statusEl.textContent = text;
+      statusEl.className = 'status ' + className;
+    }
+
+    function formatTime(seconds) {
+      const s = Math.floor(seconds);
+      if (s < 60) return s + 's';
+      const m = Math.floor(s / 60);
+      const sec = s % 60;
+      return sec ? `${m}m ${sec}s` : `${m}m`;
+    }
+
+    function playAlarmOnce() {
+      const ctx = audioContext || new (window.AudioContext || window.webkitAudioContext)();
+      const osc1 = ctx.createOscillator();
+      const osc2 = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc1.type = 'sine';
+      osc1.frequency.value = 880;
+      osc2.type = 'sine';
+      osc2.frequency.value = 1100;
+      gain.gain.setValueAtTime(0.3, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 2);
+      osc1.connect(gain);
+      osc2.connect(gain);
+      gain.connect(ctx.destination);
+      osc1.start(ctx.currentTime);
+      osc2.start(ctx.currentTime);
+      osc1.stop(ctx.currentTime + 2);
+      osc2.stop(ctx.currentTime + 2);
+    }
+
+    function startAlarmLoop() {
+      if (alarmInterval) return;
+      playAlarmOnce();
+      alarmInterval = setInterval(playAlarmOnce, 2000);
+    }
+
+    function stopAlarmLoop() {
+      if (alarmInterval) {
+        clearInterval(alarmInterval);
+        alarmInterval = null;
+      }
+    }
+
+    function getSelectedDurationSeconds() {
+      const minutes = Math.max(0, parseInt(timerMinutesInput.value, 10) || 0);
+      const seconds = Math.max(0, parseInt(timerSecondsInput.value, 10) || 0);
+      return minutes * 60 + seconds;
+    }
+
+    function setDurationInputsEnabled(enabled) {
+      timerMinutesInput.disabled = !enabled;
+      timerSecondsInput.disabled = !enabled;
+    }
+
+    function updateDisplay() {
+      if (!isRunning) return;
+      const now = Date.now();
+      const inGrace = gracePeriodEndTime != null;
+
+      if (lastClassification === 'Music') {
+        gracePeriodEndTime = null;
+        const elapsed = (now - lastTickTime) / 1000;
+        remainingSeconds = Math.max(0, remainingSeconds - elapsed);
+        lastTickTime = now;
+        if (remainingSeconds <= 0) {
+          stop(true);
+          return;
+        }
+      } else if (inGrace) {
+        if (now >= gracePeriodEndTime) {
+          remainingSeconds = remainingWhenMusicStopped;
+          gracePeriodEndTime = null;
+          lastTickTime = now;
+          setStatus('No music for 5s — timer paused', 'other');
+        } else {
+          const elapsed = (now - lastTickTime) / 1000;
+          remainingSeconds = Math.max(0, remainingSeconds - elapsed);
+          lastTickTime = now;
+          if (remainingSeconds <= 0) {
+            stop(true);
+            return;
+          }
+        }
+      } else {
+        lastTickTime = now;
+      }
+      timerDisplay.textContent = formatTime(remainingSeconds);
+      displayAnimationId = requestAnimationFrame(updateDisplay);
+    }
+
+    async function initClassifier() {
+      setStatus('Loading MediaPipe…');
+      const mod = await import(
+        'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-audio@0.10.32/audio_bundle.mjs'
+      );
+      const AudioClassifier = mod.AudioClassifier;
+      const FilesetResolver = globalThis.FilesetResolver;
+      if (!FilesetResolver) throw new Error('MediaPipe FilesetResolver not found (check console)');
+      const wasm = await FilesetResolver.forAudioTasks(
+        'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-audio@0.10.32/wasm'
+      );
+      classifier = await AudioClassifier.createFromModelPath(
+        wasm,
+        'https://storage.googleapis.com/mediapipe-models/audio_classifier/yamnet/float32/1/yamnet.tflite'
+      );
+      classifier.setDefaultSampleRate(SAMPLE_RATE);
+    }
+
+    async function initMicrophone() {
+      setStatus('Requesting microphone…');
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
+      const src = audioContext.createMediaStreamSource(stream);
+      // ScriptProcessorNode is deprecated but works without a server; buffer 4096
+      const bufferSize = 4096;
+      const inputChannels = 1;
+      const outputChannels = 1;
+      processor = audioContext.createScriptProcessor(bufferSize, inputChannels, outputChannels);
+
+      processor.onaudioprocess = (e) => {
+        if (!isRunning || !classifier) return;
+        const input = e.inputBuffer.getChannelData(0);
+        for (let i = 0; i < input.length; i++) {
+          audioBuffer.push(input[i]);
+        }
+        if (audioBuffer.length >= CHUNK_SAMPLES) {
+          const chunk = new Float32Array(CHUNK_SAMPLES);
+          for (let i = 0; i < CHUNK_SAMPLES; i++) chunk[i] = audioBuffer.shift();
+          try {
+            const results = classifier.classify(chunk, SAMPLE_RATE);
+            if (results && results.length > 0 && results[0].classifications && results[0].classifications.length > 0) {
+              const cats = results[0].classifications[0].categories;
+              const top = cats && cats.length > 0 ? cats[0] : null;
+              const label = top ? (top.displayName || top.categoryName || '').trim() : '';
+              const now = Date.now();
+              if (label === 'Music') {
+                gracePeriodEndTime = null;
+                lastClassification = label;
+                lastClassificationTime = now;
+                setStatus('Detected: Music — timer running', 'music');
+              } else {
+                if (lastClassification === 'Music') {
+                  remainingWhenMusicStopped = remainingSeconds;
+                  gracePeriodEndTime = now + GRACE_PERIOD_MS;
+                }
+                lastClassification = label;
+                lastClassificationTime = now;
+                if (gracePeriodEndTime != null) {
+                  setStatus(label ? `Detected: ${label} — timer continues for 5s unless music resumes` : 'Listening…', 'other');
+                } else {
+                  setStatus(label ? `Detected: ${label} — timer paused` : 'Listening…', 'other');
+                }
+              }
+            }
+          } catch (err) {
+            console.warn('Classification error:', err);
+          }
+        }
+      };
+
+      src.connect(processor);
+      processor.connect(audioContext.destination);
+    }
+
+    async function start() {
+      if (isRunning) return;
+      try {
+        btnStart.classList.add('loading');
+        if (!classifier) {
+          await initClassifier();
+          await initMicrophone();
+        }
+        remainingSeconds = getSelectedDurationSeconds();
+        lastClassification = null;
+        lastClassificationTime = Date.now();
+        lastTickTime = Date.now();
+        gracePeriodEndTime = null;
+        stopAlarmLoop();
+        isRunning = true;
+        btnStart.textContent = 'Running';
+        btnStart.disabled = false;
+        setDurationInputsEnabled(false);
+        setStatus('Listening…', 'detecting');
+        displayAnimationId = requestAnimationFrame(updateDisplay);
+      } catch (err) {
+        setStatus('Error: ' + (err.message || err), 'error');
+        console.error(err);
+      } finally {
+        btnStart.classList.remove('loading');
+      }
+    }
+
+    function stop(timesUp = false) {
+      isRunning = false;
+      if (displayAnimationId != null) {
+        cancelAnimationFrame(displayAnimationId);
+        displayAnimationId = null;
+      }
+      timerDisplay.textContent = remainingSeconds <= 0 ? '0s' : formatTime(remainingSeconds);
+      if (timesUp) {
+        btnStart.textContent = 'Clear';
+        setStatus('Time’s up! Press Clear to stop the alarm.');
+        startAlarmLoop();
+      } else {
+        stopAlarmLoop();
+        btnStart.textContent = 'Start';
+        setStatus('Stopped. Press Start to begin again.');
+      }
+      setDurationInputsEnabled(true);
+    }
+
+    function clearAlarm() {
+      stopAlarmLoop();
+      btnStart.textContent = 'Start';
+      setStatus('Press Start to begin again.');
+      setDurationInputsEnabled(true);
+    }
+
+    btnStart.addEventListener('click', () => {
+      if (btnStart.textContent === 'Clear') {
+        clearAlarm();
+      } else if (isRunning) {
+        stop();
+      } else {
+        start();
+      }
+    });
+
+    function refreshDurationDisplay() {
+      if (!isRunning) timerDisplay.textContent = formatTime(getSelectedDurationSeconds());
+    }
+
+    timerMinutesInput.addEventListener('input', refreshDurationDisplay);
+    timerMinutesInput.addEventListener('change', refreshDurationDisplay);
+    timerSecondsInput.addEventListener('input', refreshDurationDisplay);
+    timerSecondsInput.addEventListener('change', refreshDurationDisplay);
+
+    (function init() {
+      setStatus('Click Start to load the classifier and begin.');
+      btnStart.disabled = false;
+      refreshDurationDisplay();
+    })();
+  </script>
+</body>
+</html>
