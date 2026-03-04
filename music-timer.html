@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#1a1a2e">
+  <link rel="icon" href="logo.svg" type="image/svg+xml">
   <link rel="manifest" href="manifest.json">
   <title>Music Timer</title>
   <style>
@@ -155,6 +156,24 @@
     let alarmInterval = null;
     let gracePeriodEndTime = null;
     let remainingWhenMusicStopped = 0;
+    let wakeLockSentinel = null;
+
+    async function requestWakeLock() {
+      if (!navigator.wakeLock || wakeLockSentinel) return;
+      try {
+        wakeLockSentinel = await navigator.wakeLock.request('screen');
+        wakeLockSentinel.addEventListener('release', () => { wakeLockSentinel = null; });
+      } catch (err) {
+        console.warn('Wake lock failed:', err);
+      }
+    }
+
+    function releaseWakeLock() {
+      if (wakeLockSentinel) {
+        wakeLockSentinel.release().catch(() => {});
+        wakeLockSentinel = null;
+      }
+    }
 
     function setStatus(text, className = '') {
       statusEl.textContent = text;
@@ -343,6 +362,7 @@
         setDurationInputsEnabled(false);
         setStatus('Listening…', 'detecting');
         displayAnimationId = requestAnimationFrame(updateDisplay);
+        requestWakeLock();
       } catch (err) {
         setStatus('Error: ' + (err.message || err), 'error');
         console.error(err);
@@ -353,6 +373,7 @@
 
     function stop(timesUp = false) {
       isRunning = false;
+      releaseWakeLock();
       if (displayAnimationId != null) {
         cancelAnimationFrame(displayAnimationId);
         displayAnimationId = null;
@@ -372,6 +393,7 @@
 
     function clearAlarm() {
       stopAlarmLoop();
+      releaseWakeLock();
       btnStart.textContent = 'Start';
       setStatus('Press Start to begin again.');
       setDurationInputsEnabled(true);
@@ -405,6 +427,14 @@
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('sw.js', { scope: './' }).catch(() => {});
     }
+
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible' && isRunning) {
+        requestWakeLock();
+      } else if (document.visibilityState === 'hidden') {
+        releaseWakeLock();
+      }
+    });
   </script>
 </body>
 </html>
